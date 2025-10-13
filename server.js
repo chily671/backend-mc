@@ -5,7 +5,7 @@ import { Server } from "socket.io";
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" }
+  cors: { origin: "*" },
 });
 
 const rooms = {};
@@ -33,10 +33,10 @@ io.on("connection", (socket) => {
     const players = room.players;
     const whiteHat = players[Math.floor(Math.random() * players.length)];
 
-    players.forEach(p => {
+    players.forEach((p) => {
       io.to(p.id).emit("role_assigned", {
         role: p.id === whiteHat.id ? "whitehat" : "keyword",
-        keyword: p.id === whiteHat.id ? null : room.keyword
+        keyword: p.id === whiteHat.id ? null : room.keyword,
       });
     });
 
@@ -58,6 +58,11 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.id);
   });
+});
+
+// tôi muốn hàm get để biết server đang chạy
+app.get("/", (req, res) => {
+  res.send("Server is running");
 });
 
 const PORT = process.env.PORT || 5008;
