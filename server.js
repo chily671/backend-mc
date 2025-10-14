@@ -110,12 +110,23 @@ io.on("connection", (socket) => {
 
   // 🏁 Kết thúc game
   socket.on("end_game", ({ roomCode }) => {
-    const room = rooms[roomCode];
-    if (!room) return;
-    room.started = false;
-    io.to(roomCode).emit("game_ended", room.players);
-    console.log(`🏁 Game ended in room ${roomCode}`);
-  });
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  // Giả sử bạn đã lưu roles & keywords cho từng player trong room
+  const revealData = room.players.map(p => ({
+    name: p.name,
+    role: p.role,
+    keyword: p.keyword
+  }));
+
+  // Gửi toàn bộ danh sách đến mọi người trong phòng
+  io.in(roomCode).emit("game_ended", revealData);
+
+  // Option: reset trạng thái phòng (về phòng chờ)
+  room.inGame = false;
+});
+
 
   // ❌ Ngắt kết nối
   socket.on("disconnect", () => {
