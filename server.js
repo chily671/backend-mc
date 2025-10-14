@@ -8,7 +8,6 @@ const io = new Server(server, {
   cors: { origin: "*" },
 });
 
-// Lưu thông tin các phòng
 const rooms = {};
 
 io.on("connection", (socket) => {
@@ -23,11 +22,7 @@ io.on("connection", (socket) => {
         villagers: 3,
         spies: 1,
         whiteHats: 0,
-        keywords: {
-          villager: "",
-          spy: "",
-          whiteHat: "",
-        },
+        keywords: { villager: "", spy: "", whiteHat: "" },
       },
       started: false,
     };
@@ -43,15 +38,14 @@ io.on("connection", (socket) => {
 
     room.players.push({ id: socket.id, name: playerName, role: "player" });
     socket.join(roomCode);
-
     io.to(roomCode).emit("players_update", room.players);
     console.log(`👤 ${playerName} joined room ${roomCode}`);
   });
 
-  // ⚙️ Host cập nhật cài đặt (số người & từ khóa)
+  // ⚙️ Host cập nhật cài đặt
   socket.on("update_settings", ({ roomCode, newSettings }) => {
     const room = rooms[roomCode];
-    if (!room || room.host !== socket.id) return; // chỉ host được chỉnh
+    if (!room || room.host !== socket.id) return;
     room.settings = { ...room.settings, ...newSettings };
     io.to(roomCode).emit("settings_updated", room.settings);
     console.log(`⚙️ Room ${roomCode} settings updated`);
@@ -63,37 +57,56 @@ io.on("connection", (socket) => {
     if (!room || room.started) return;
 
     const { villagers, spies, whiteHats, keywords } = room.settings;
-    const players = [...room.players.filter(p => p.role !== "host")];
+    const players = [...room.players.filter((p) => p.role !== "host")];
 
-    // Tổng người cần chia vai
+    // Kiểm tra số lượng
     const totalNeeded = villagers + spies + whiteHats;
     if (players.length < totalNeeded) {
       io.to(room.host).emit("error_message", "Không đủ người chơi để bắt đầu!");
       return;
     }
 
-    // Shuffle danh sách người chơi
+    // Xáo trộn danh sách
     const shuffled = players.sort(() => Math.random() - 0.5);
-    let assignedRoles = [];
 
     // Chia vai
+    const assignedRoles = [];
     assignedRoles.push(
-      ...shuffled.slice(0, villagers).map(p => ({ ...p, role: "villager" }))
+      ...shuffled.slice(0, villagers).map((p) => ({
+        ...p,
+        role: "villager",
+        keyword: keywords.villager,
+      }))
     );
     assignedRoles.push(
-      ...shuffled.slice(villagers, villagers + spies).map(p => ({ ...p, role: "spy" }))
+      ...shuffled.slice(villagers, villagers + spies).map((p) => ({
+        ...p,
+        role: "spy",
+        keyword: keywords.spy,
+      }))
     );
     assignedRoles.push(
-      ...shuffled.slice(villagers + spies, villagers + spies + whiteHats).map(p => ({ ...p, role: "whiteHat" }))
+      ...shuffled
+        .slice(villagers + spies, villagers + spies + whiteHats)
+        .map((p) => ({
+          ...p,
+          role: "whiteHat",
+          keyword: keywords.whiteHat || null,
+        }))
     );
 
-    // Gửi vai và từ khóa riêng cho từng người
+    // Cập nhật lại room.players
+    room.players = [
+      room.players.find((p) => p.role === "host"), // giữ host
+      ...assignedRoles,
+    ];
+
+    // Gửi vai + từ khóa riêng cho từng người
     assignedRoles.forEach((player) => {
-      let keyword = null;
-      if (player.role === "villager") keyword = keywords.villager;
-      else if (player.role === "spy") keyword = keywords.spy;
-      else if (player.role === "whiteHat") keyword = null;
-      io.to(player.id).emit("role_assigned", { role: player.role, keyword });
+      io.to(player.id).emit("role_assigned", {
+        role: player.role,
+        keyword: player.keyword,
+      });
     });
 
     room.started = true;
@@ -101,38 +114,40 @@ io.on("connection", (socket) => {
     console.log(`🎮 Game started in room ${roomCode}`);
   });
 
-  // 👁️ Host hoặc ai đó tiết lộ vai trò
-  socket.on("reveal_role", ({ roomCode, playerId }) => {
-    const room = rooms[roomCode];
-    if (!room) return;
-    io.to(roomCode).emit("role_revealed", playerId);
-  });
-
   // 🏁 Kết thúc game
   socket.on("end_game", ({ roomCode }) => {
-  const room = rooms[roomCode];
-  if (!room) return;
+    const room = rooms[roomCode];
+    if (!room) return;
 
-  // Giả sử bạn đã lưu roles & keywords cho từng player trong room
-  const revealData = room.players.map(p => ({
-    name: p.name,
-    role: p.role,
-    keyword: p.keyword
-  }));
+    // ✅ Lấy role & keyword thật đã được lưu
+    const revealData = room.players
+      .filter((p) => p.role !== "host")
+      .map((p) => ({
+        name: p.name,
+        role: p.role,
+        keyword: p.keyword,
+      }));
 
-  // Gửi toàn bộ danh sách đến mọi người trong phòng
-  io.in(roomCode).emit("game_ended", revealData);
+    io.to(roomCode).emit("game_ended", revealData);
+    console.log(`🏁 Game ended in room ${roomCode}`);
 
-  // Option: reset trạng thái phòng (về phòng chờ)
-  room.inGame = false;
-});
-
+    // Sau vài giây reset lại phòng
+    setTimeout(() => {
+      room.started = false;
+      room.players.forEach((p) => {
+        if (p.role !== "host") {
+          p.role = "player";
+          p.keyword = null;
+        }
+      });
+      io.to(roomCode).emit("players_update", room.players);
+    }, 5000);
+  });
 
   // ❌ Ngắt kết nối
   socket.on("disconnect", () => {
     console.log("🔴 User disconnected:", socket.id);
 
-    // Xóa người khỏi phòng
     for (const roomCode in rooms) {
       const room = rooms[roomCode];
       const idx = room.players.findIndex((p) => p.id === socket.id);
@@ -147,7 +162,6 @@ io.on("connection", (socket) => {
   });
 });
 
-// ✅ Kiểm tra server
 app.get("/", (req, res) => {
   res.send("✅ Socket server is running fine!");
 });
