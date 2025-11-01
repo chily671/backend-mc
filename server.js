@@ -21,11 +21,13 @@ io.on("connection", (socket) => {
   console.log("🟢", socket.id, "connected");
 
   socket.on("ping_check", () => socket.emit("pong"));
-
+  // 🏠 Host tạo phòng
   socket.on("create_room", ({ roomCode, hostName, userId }) => {
     rooms[roomCode] = {
       host: userId,
-      players: [{ id: userId, socketId: socket.id, name: hostName, role: "host" }],
+      players: [
+        { id: userId, socketId: socket.id, name: hostName, role: "host" },
+      ],
       settings: {
         villagers: 3,
         spies: 1,
@@ -34,17 +36,37 @@ io.on("connection", (socket) => {
       },
       started: false,
     };
+
     socket.join(roomCode);
     io.to(socket.id).emit("room_created", roomCode);
+    console.log(`🆕 Room ${roomCode} created by ${hostName}`);
+
+    // 🔄 Gửi cập nhật danh sách phòng cho tất cả
+    io.emit(
+      "room_list_update",
+      Object.entries(rooms).map(([code, data]) => ({
+        code,
+        host: data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
+        playerCount: data.players.length,
+        started: data.started,
+      }))
+    );
   });
 
   socket.on("join_room", ({ roomCode, playerName, userId }) => {
     const room = getRoom(roomCode);
-    if (!room) return io.to(socket.id).emit("error_message", "Phòng không tồn tại!");
+    if (!room)
+      return io.to(socket.id).emit("error_message", "Phòng không tồn tại!");
 
     const existing = room.players.find((p) => p.id === userId);
     if (existing) existing.socketId = socket.id;
-    else room.players.push({ id: userId, socketId: socket.id, name: playerName, role: "player" });
+    else
+      room.players.push({
+        id: userId,
+        socketId: socket.id,
+        name: playerName,
+        role: "player",
+      });
 
     socket.join(roomCode);
     updatePlayers(roomCode);
@@ -57,6 +79,17 @@ io.on("connection", (socket) => {
     io.to(roomCode).emit("settings_updated", room.settings);
   });
 
+  // 🔹 Gửi danh sách phòng hiện tại khi client yêu cầu
+  socket.on("get_rooms", () => {
+    const list = Object.entries(rooms).map(([code, data]) => ({
+      code,
+      host: data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
+      playerCount: data.players.length,
+      started: data.started,
+    }));
+    io.to(socket.id).emit("room_list", list);
+  });
+
   socket.on("start_game", ({ roomCode, userId }) => {
     const room = getRoom(roomCode);
     if (!room || room.started || room.host !== userId) return;
@@ -66,15 +99,23 @@ io.on("connection", (socket) => {
 
     const shuffled = [...players].sort(() => Math.random() - 0.5);
     const assigned = [
-      ...shuffled.slice(0, villagers).map((p) => ({ ...p, role: "villager", keyword: keywords.villager })),
-      ...shuffled.slice(villagers, villagers + spies).map((p) => ({ ...p, role: "spy", keyword: keywords.spy })),
+      ...shuffled
+        .slice(0, villagers)
+        .map((p) => ({ ...p, role: "villager", keyword: keywords.villager })),
+      ...shuffled
+        .slice(villagers, villagers + spies)
+        .map((p) => ({ ...p, role: "spy", keyword: keywords.spy })),
       ...shuffled
         .slice(villagers + spies, villagers + spies + whiteHats)
         .map((p) => ({ ...p, role: "whiteHat", keyword: keywords.whiteHat })),
     ];
 
     room.players = [room.players.find((p) => p.role === "host"), ...assigned];
-    assigned.forEach((p) => io.to(p.socketId).emit("role_assigned", { role: p.role, keyword: p.keyword }));
+    assigned.forEach((p) =>
+      io
+        .to(p.socketId)
+        .emit("role_assigned", { role: p.role, keyword: p.keyword })
+    );
     room.started = true;
     io.to(roomCode).emit("game_started");
   });
