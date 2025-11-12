@@ -70,8 +70,12 @@ io.on("connection", (socket) => {
 
     socket.join(roomCode);
     updatePlayers(roomCode);
-  });
 
+    // ✅ Thêm dòng này:
+    io.to(socket.id).emit("joined_success", { roomCode });
+
+    console.log(`👤 ${playerName} joined room ${roomCode}`);
+  });
   // 🚪 Người chơi rời phòng
   socket.on("leave_room", ({ roomCode, userId }) => {
     const room = rooms[roomCode];
