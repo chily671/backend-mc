@@ -72,6 +72,38 @@ io.on("connection", (socket) => {
     updatePlayers(roomCode);
   });
 
+  // 🚪 Người chơi rời phòng
+  socket.on("leave_room", ({ roomCode, userId }) => {
+    const room = rooms[roomCode];
+    if (!room) return;
+
+    const idx = room.players.findIndex((p) => p.id === userId);
+    if (idx !== -1) {
+      const player = room.players[idx];
+      console.log(`🚪 ${player.name} left room ${roomCode}`);
+      room.players.splice(idx, 1);
+      socket.leave(roomCode);
+
+      // Nếu host rời → xoá cả phòng
+      if (userId === room.host) {
+        delete rooms[roomCode];
+        console.log(`❌ Room ${roomCode} removed (host left)`);
+        io.emit(
+          "room_list_update",
+          Object.entries(rooms).map(([code, data]) => ({
+            code,
+            host:
+              data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
+            playerCount: data.players.length,
+            started: data.started,
+          }))
+        );
+      } else {
+        updatePlayers(roomCode);
+      }
+    }
+  });
+
   socket.on("update_settings", ({ roomCode, userId, newSettings }) => {
     const room = getRoom(roomCode);
     if (!room || room.host !== userId) return;
