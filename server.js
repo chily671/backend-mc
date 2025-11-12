@@ -85,26 +85,19 @@ io.on("connection", (socket) => {
     if (idx !== -1) {
       const player = room.players[idx];
       console.log(`🚪 ${player.name} left room ${roomCode}`);
-      room.players.splice(idx, 1);
-      socket.leave(roomCode);
 
-      // Nếu host rời → xoá cả phòng
+      // Nếu host rời -> đánh dấu offline thay vì xoá ngay
       if (userId === room.host) {
-        delete rooms[roomCode];
-        console.log(`❌ Room ${roomCode} removed (host left)`);
-        io.emit(
-          "room_list_update",
-          Object.entries(rooms).map(([code, data]) => ({
-            code,
-            host:
-              data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
-            playerCount: data.players.length,
-            started: data.started,
-          }))
-        );
+        player.socketId = null; // cho phép reconnect
+        io.to(roomCode).emit("players_update", room.players);
+        console.log(`⚠️ Host ${player.name} offline, phòng vẫn tồn tại`);
       } else {
+        room.players.splice(idx, 1);
+        socket.leave(roomCode);
         updatePlayers(roomCode);
       }
+
+      broadcastRoomList();
     }
   });
 
@@ -179,8 +172,10 @@ io.on("connection", (socket) => {
     for (const [roomCode, room] of Object.entries(rooms)) {
       const player = room.players.find((p) => p.socketId === socket.id);
       if (player) {
+        // Chỉ set socketId = null, không xoá phòng ngay
         player.socketId = null;
         updatePlayers(roomCode);
+        console.log(`⚠️ ${player.name} bị disconnect khỏi ${roomCode}`);
       }
     }
   });
