@@ -26,7 +26,7 @@ function getRoom(roomCode) {
 
 function updatePlayers(roomCode) {
   const room = getRoom(roomCode);
-  if (room) io.to(roomCode).emit("players_update", room.players);
+  if (room) io.to(roomCode).emit("players_update", room);
 }
 
 io.on("connection", (socket) => {
