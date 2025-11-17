@@ -8,6 +8,17 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 const rooms = {}; // { roomCode: { host, players, settings, started } }
 
+function broadcastRoomList() {
+  const list = Object.entries(rooms).map(([code, data]) => ({
+    code,
+    host: data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
+    playerCount: data.players.length,
+    started: data.started,
+  }));
+
+  io.emit("room_list_update", list);
+}
+
 function getRoom(roomCode) {
   return rooms[roomCode];
 }
@@ -41,16 +52,7 @@ io.on("connection", (socket) => {
     io.to(socket.id).emit("room_created", roomCode);
     console.log(`🆕 Room ${roomCode} created by ${hostName}`);
 
-    // 🔄 Gửi cập nhật danh sách phòng cho tất cả
-    io.emit(
-      "room_list_update",
-      Object.entries(rooms).map(([code, data]) => ({
-        code,
-        host: data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
-        playerCount: data.players.length,
-        started: data.started,
-      }))
-    );
+    broadcastRoomList();
   });
 
   socket.on("join_room", ({ roomCode, playerName, userId }) => {
