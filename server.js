@@ -140,27 +140,49 @@ io.on("connection", (socket) => {
     if (!room || room.started || room.host !== userId) return;
 
     const { villagers, spies, whiteHats, keywords } = room.settings;
+
+    // Lấy danh sách player (không bao gồm host)
     const players = room.players.filter((p) => p.role !== "host");
 
     const shuffled = [...players].sort(() => Math.random() - 0.5);
-    const assigned = [
+
+    // Gán vai trò cho từng player
+    const assignedRoles = [
       ...shuffled
         .slice(0, villagers)
-        .map((p) => ({ ...p, role: "villager", keyword: keywords.villager })),
+        .map((p) => ({
+          id: p.id,
+          role: "villager",
+          keyword: keywords.villager,
+        })),
       ...shuffled
         .slice(villagers, villagers + spies)
-        .map((p) => ({ ...p, role: "spy", keyword: keywords.spy })),
+        .map((p) => ({ id: p.id, role: "spy", keyword: keywords.spy })),
       ...shuffled
         .slice(villagers + spies, villagers + spies + whiteHats)
-        .map((p) => ({ ...p, role: "whiteHat", keyword: keywords.whiteHat })),
+        .map((p) => ({
+          id: p.id,
+          role: "whiteHat",
+          keyword: keywords.whiteHat,
+        })),
     ];
 
-    room.players = [room.players.find((p) => p.role === "host"), ...assigned];
-    assigned.forEach((p) =>
+    // Cập nhật role/keyword cho player, giữ nguyên host và player khác
+    room.players = room.players.map((p) => {
+      if (p.role === "host") return p; // giữ host nguyên
+      const assignment = assignedRoles.find((a) => a.id === p.id);
+      return assignment
+        ? { ...p, role: assignment.role, keyword: assignment.keyword }
+        : p;
+    });
+
+    // Gửi role cho từng người
+    assignedRoles.forEach((p) =>
       io
-        .to(p.socketId)
+        .to(room.players.find((player) => player.id === p.id).socketId)
         .emit("role_assigned", { role: p.role, keyword: p.keyword })
     );
+
     room.started = true;
     io.to(roomCode).emit("game_started");
   });
