@@ -33,6 +33,7 @@ io.on("connection", (socket) => {
 
   socket.on("ping_check", () => socket.emit("pong"));
   // 🏠 Host tạo phòng
+
   socket.on("create_room", ({ roomCode, hostName, userId }) => {
     rooms[roomCode] = {
       host: userId,
@@ -52,6 +53,9 @@ io.on("connection", (socket) => {
     io.to(socket.id).emit("room_created", roomCode);
     console.log(`🆕 Room ${roomCode} created by ${hostName}`);
 
+    // ngay lập tức gửi players_update cho host (để host thấy chính mình)
+    updatePlayers(roomCode);
+
     broadcastRoomList();
   });
 
@@ -61,23 +65,33 @@ io.on("connection", (socket) => {
       return io.to(socket.id).emit("error_message", "Phòng không tồn tại!");
 
     const existing = room.players.find((p) => p.id === userId);
-    if (existing) existing.socketId = socket.id;
-    else
+    if (existing) {
+      existing.socketId = socket.id;
+      // nếu client thay tên, cập nhật lại để tránh tên cũ
+      existing.name = playerName || existing.name;
+    } else {
       room.players.push({
         id: userId,
         socketId: socket.id,
         name: playerName,
         role: "player",
       });
+    }
 
     socket.join(roomCode);
+
+    // gửi cập nhật người chơi cho cả phòng
     updatePlayers(roomCode);
 
-    // ✅ Thêm dòng này:
+    // báo cho người vừa join biết đã thành công
     io.to(socket.id).emit("joined_success", { roomCode });
+
+    // cập nhật danh sách phòng cho tất cả client (số người thay đổi)
+    broadcastRoomList();
 
     console.log(`👤 ${playerName} joined room ${roomCode}`);
   });
+
   // 🚪 Người chơi rời phòng
   socket.on("leave_room", ({ roomCode, userId }) => {
     const room = rooms[roomCode];
