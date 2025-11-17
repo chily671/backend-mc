@@ -168,6 +168,16 @@ io.on("connection", (socket) => {
     }, 5000);
   });
 
+  // Show thông tin người chơi cho host
+  socket.on("get_player_info", ({ roomCode, userId }) => {
+    const room = getRoom(roomCode);
+    if (!room || room.host !== userId) return;
+    const reveal = room.players
+      .filter((p) => p.role !== "host")
+      .map((p) => ({ name: p.name, role: p.role, keyword: p.keyword }));
+    io.to(roomCode).emit("game_playing", reveal);
+  });
+
   socket.on("disconnect", () => {
     for (const [roomCode, room] of Object.entries(rooms)) {
       const player = room.players.find((p) => p.socketId === socket.id);
