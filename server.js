@@ -11,14 +11,13 @@ const rooms = {}; // { roomCode: { host, players, settings, started } }
 function broadcastRoomList() {
   const list = Object.entries(rooms).map(([code, data]) => ({
     code,
-    host: data.players.find(p => p.id === data.host)?.name || "Ẩn danh",
+    host: data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
     playerCount: data.players.length,
-    started: data.started
+    started: data.started,
   }));
 
   io.emit("room_list_update", list);
 }
-
 
 function getRoom(roomCode) {
   return rooms[roomCode];
@@ -26,7 +25,17 @@ function getRoom(roomCode) {
 
 function updatePlayers(roomCode) {
   const room = getRoom(roomCode);
-  if (room) io.to(roomCode).emit("players_update", room.players);
+  if (!room) return;
+
+  const playersData = room.players.map((p) => ({
+    id: p.id,
+    name: p.name,
+    role: p.role,
+    status: p.socketId ? "online" : "offline",
+    keyword: p.keyword || null,
+  }));
+
+  io.to(roomCode).emit("players_update", playersData);
 }
 
 io.on("connection", (socket) => {
