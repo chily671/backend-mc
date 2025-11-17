@@ -50,7 +50,7 @@ io.on("connection", (socket) => {
     };
 
     socket.join(roomCode);
-    io.to(socket.id).emit("room_created", roomCode);
+    io.to(socket.id).emit("room_created", { roomCode, host: userId });
     console.log(`🆕 Room ${roomCode} created by ${hostName}`);
 
     // ngay lập tức gửi players_update cho host (để host thấy chính mình)
@@ -84,7 +84,7 @@ io.on("connection", (socket) => {
     updatePlayers(roomCode);
 
     // báo cho người vừa join biết đã thành công
-    io.to(socket.id).emit("joined_success", { roomCode });
+    io.to(socket.id).emit("joined_success", { roomCode, host: room.host });
 
     // cập nhật danh sách phòng cho tất cả client (số người thay đổi)
     broadcastRoomList();
