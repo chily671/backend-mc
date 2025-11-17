@@ -11,11 +11,12 @@ const rooms = {}; // { roomCode: { host, players, settings, started } }
 function broadcastRoomList() {
   const list = Object.entries(rooms).map(([code, data]) => ({
     code,
-    host: data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
-    playerCount: data.players.length,
+    host:
+      data.players.find((p) => p.id === data.host && p.status === "online")?.name ||
+      "Ẩn danh",
+    playerCount: data.players.filter((p) => p.status === "online").length,
     started: data.started,
   }));
-
   io.emit("room_list_update", list);
 }
 
@@ -25,25 +26,23 @@ function getRoom(roomCode) {
 
 function updatePlayers(roomCode) {
   const room = getRoom(roomCode);
-  if (room) io.to(roomCode).emit("players_update", room.players);
+  if (!room) return;
+  io.to(roomCode).emit("players_update", room.players);
 }
 
 io.on("connection", (socket) => {
   console.log("🟢", socket.id, "connected");
 
-  socket.on("ping_check", () => socket.emit("pong"));
-  // 🏠 Host tạo phòng
-
   socket.on("create_room", ({ roomCode, hostName, userId }) => {
     rooms[roomCode] = {
       host: userId,
       players: [
-        { id: userId, socketId: socket.id, name: hostName, role: "host" },
+        { id: userId, socketId: socket.id, name: hostName, role: "host", status: "online", keyword: null },
       ],
       settings: {
         villagers: 3,
         spies: 1,
-        whiteHats: 0,
+        whiteHats: 1,
         keywords: { villager: "", spy: "", whiteHat: "" },
       },
       started: false,
@@ -51,137 +50,109 @@ io.on("connection", (socket) => {
 
     socket.join(roomCode);
     io.to(socket.id).emit("room_created", { roomCode, host: userId });
-    console.log(`🆕 Room ${roomCode} created by ${hostName}`);
-
-    // ngay lập tức gửi players_update cho host (để host thấy chính mình)
     updatePlayers(roomCode);
-
     broadcastRoomList();
   });
 
   socket.on("join_room", ({ roomCode, playerName, userId }) => {
     const room = getRoom(roomCode);
-    if (!room)
-      return io.to(socket.id).emit("error_message", "Phòng không tồn tại!");
+    if (!room) return socket.emit("error_message", "Phòng không tồn tại!");
 
     const existing = room.players.find((p) => p.id === userId);
     if (existing) {
       existing.socketId = socket.id;
-      // nếu client thay tên, cập nhật lại để tránh tên cũ
       existing.name = playerName || existing.name;
+      existing.status = "online";
     } else {
       room.players.push({
         id: userId,
         socketId: socket.id,
         name: playerName,
         role: "player",
+        keyword: null,
+        status: "online",
       });
     }
 
     socket.join(roomCode);
-
-    // gửi cập nhật người chơi cho cả phòng
     updatePlayers(roomCode);
-
-    // báo cho người vừa join biết đã thành công
     io.to(socket.id).emit("joined_success", { roomCode, host: room.host });
-
-    // cập nhật danh sách phòng cho tất cả client (số người thay đổi)
     broadcastRoomList();
-
-    console.log(`👤 ${playerName} joined room ${roomCode}`);
   });
 
-  // 🚪 Người chơi rời phòng
   socket.on("leave_room", ({ roomCode, userId }) => {
-    const room = rooms[roomCode];
+    const room = getRoom(roomCode);
     if (!room) return;
 
-    const idx = room.players.findIndex((p) => p.id === userId);
-    if (idx !== -1) {
-      const player = room.players[idx];
-      console.log(`🚪 ${player.name} left room ${roomCode}`);
+    const player = room.players.find((p) => p.id === userId);
+    if (!player) return;
 
-      // Nếu host rời -> đánh dấu offline thay vì xoá ngay
-      if (userId === room.host) {
-        player.socketId = null; // cho phép reconnect
-        io.to(roomCode).emit("players_update", room.players);
-        console.log(`⚠️ Host ${player.name} offline, phòng vẫn tồn tại`);
-      } else {
-        room.players.splice(idx, 1);
-        socket.leave(roomCode);
-        updatePlayers(roomCode);
-      }
-
-      broadcastRoomList();
+    if (player.role === "host") {
+      player.status = "offline";
+      updatePlayers(roomCode);
+    } else {
+      room.players = room.players.filter((p) => p.id !== userId);
+      socket.leave(roomCode);
+      updatePlayers(roomCode);
     }
+
+    broadcastRoomList();
   });
 
   socket.on("update_settings", ({ roomCode, userId, newSettings }) => {
     const room = getRoom(roomCode);
     if (!room || room.host !== userId) return;
-    room.settings = { ...room.settings, ...newSettings };
-    io.to(roomCode).emit("settings_updated", room.settings);
-  });
 
-  // 🔹 Gửi danh sách phòng hiện tại khi client yêu cầu
-  socket.on("get_rooms", () => {
-    const list = Object.entries(rooms).map(([code, data]) => ({
-      code,
-      host: data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
-      playerCount: data.players.length,
-      started: data.started,
-    }));
-    io.to(socket.id).emit("room_list", list);
+    // Merge settings nested
+    room.settings = {
+      ...room.settings,
+      ...newSettings,
+      keywords: { ...room.settings.keywords, ...newSettings.keywords },
+    };
+    io.to(roomCode).emit("settings_updated", room.settings);
   });
 
   socket.on("start_game", ({ roomCode, userId }) => {
     const room = getRoom(roomCode);
     if (!room || room.started || room.host !== userId) return;
 
-    const { villagers, spies, whiteHats, keywords } = room.settings;
-
-    // Lấy danh sách player (không bao gồm host)
+    const totalRoles =
+      room.settings.villagers + room.settings.spies + room.settings.whiteHats;
     const players = room.players.filter((p) => p.role !== "host");
+    if (players.length < totalRoles) {
+      return io.to(socket.id).emit(
+        "error_message",
+        "Không đủ người để bắt đầu game!"
+      );
+    }
 
     const shuffled = [...players].sort(() => Math.random() - 0.5);
-
-    // Gán vai trò cho từng player
     const assignedRoles = [
       ...shuffled
-        .slice(0, villagers)
-        .map((p) => ({
-          id: p.id,
-          role: "villager",
-          keyword: keywords.villager,
-        })),
+        .slice(0, room.settings.villagers)
+        .map((p) => ({ id: p.id, role: "villager", keyword: room.settings.keywords.villager })),
       ...shuffled
-        .slice(villagers, villagers + spies)
-        .map((p) => ({ id: p.id, role: "spy", keyword: keywords.spy })),
+        .slice(room.settings.villagers, room.settings.villagers + room.settings.spies)
+        .map((p) => ({ id: p.id, role: "spy", keyword: room.settings.keywords.spy })),
       ...shuffled
-        .slice(villagers + spies, villagers + spies + whiteHats)
-        .map((p) => ({
-          id: p.id,
-          role: "whiteHat",
-          keyword: keywords.whiteHat,
-        })),
+        .slice(
+          room.settings.villagers + room.settings.spies,
+          totalRoles
+        )
+        .map((p) => ({ id: p.id, role: "whiteHat", keyword: room.settings.keywords.whiteHat }))
     ];
 
-    // Cập nhật role/keyword cho player, giữ nguyên host và player khác
+    // Update roles
     room.players = room.players.map((p) => {
-      if (p.role === "host") return p; // giữ host nguyên
+      if (p.role === "host") return p;
       const assignment = assignedRoles.find((a) => a.id === p.id);
-      return assignment
-        ? { ...p, role: assignment.role, keyword: assignment.keyword }
-        : p;
+      return assignment ? { ...p, role: assignment.role, keyword: assignment.keyword } : p;
     });
 
-    // Gửi role cho từng người
-    assignedRoles.forEach((p) =>
-      io
-        .to(room.players.find((player) => player.id === p.id).socketId)
-        .emit("role_assigned", { role: p.role, keyword: p.keyword })
-    );
+    assignedRoles.forEach((p) => {
+      const socketId = room.players.find((player) => player.id === p.id)?.socketId;
+      if (socketId) io.to(socketId).emit("role_assigned", { role: p.role, keyword: p.keyword });
+    });
 
     room.started = true;
     io.to(roomCode).emit("game_started");
@@ -194,6 +165,7 @@ io.on("connection", (socket) => {
       .filter((p) => p.role !== "host")
       .map((p) => ({ name: p.name, role: p.role, keyword: p.keyword }));
     io.to(roomCode).emit("game_ended", reveal);
+
     setTimeout(() => {
       room.started = false;
       room.players.forEach((p) => {
@@ -206,7 +178,6 @@ io.on("connection", (socket) => {
     }, 5000);
   });
 
-  // Show thông tin người chơi cho host
   socket.on("get_player_info", ({ roomCode, userId }) => {
     const room = getRoom(roomCode);
     if (!room || room.host !== userId) return;
@@ -217,15 +188,16 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    for (const [roomCode, room] of Object.entries(rooms)) {
+    for (const room of Object.values(rooms)) {
       const player = room.players.find((p) => p.socketId === socket.id);
       if (player) {
-        // Chỉ set socketId = null, không xoá phòng ngay
+        player.status = "offline";
         player.socketId = null;
         updatePlayers(roomCode);
-        console.log(`⚠️ ${player.name} bị disconnect khỏi ${roomCode}`);
+        console.log(`⚠️ ${player.name} bị disconnect`);
       }
     }
+    broadcastRoomList();
   });
 
   socket.on("reconnect_room", ({ roomCode, userId }) => {
@@ -234,14 +206,25 @@ io.on("connection", (socket) => {
     const player = room.players.find((p) => p.id === userId);
     if (player) {
       player.socketId = socket.id;
+      player.status = "online";
       socket.join(roomCode);
       updatePlayers(roomCode);
+
+      // emit lại trạng thái
+      if (player.role !== "player") {
+        socket.emit("role_assigned", { role: player.role, keyword: player.keyword });
+      }
+      if (room.started) {
+        const gameData = room.players
+          .filter((p) => p.role !== "host")
+          .map((p) => ({ name: p.name, role: p.role, keyword: p.keyword }));
+        socket.emit("game_playing", gameData);
+      }
+
       io.to(socket.id).emit("reconnected_success");
     }
   });
 });
 
 app.get("/", (_, res) => res.send("✅ Server đang chạy"));
-
-const PORT = process.env.PORT || 5008;
-server.listen(PORT, () => console.log(`🚀 Server chạy tại cổng ${PORT}`));
+server.listen(process.env.PORT || 5008, () => console.log("🚀 Server chạy!"));
