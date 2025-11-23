@@ -257,7 +257,7 @@ io.on("connection", (socket) => {
       }
     });
 
-    // Emit danh sách roles đầy đủ cho host
+    room.started = true;
     const hostPlayer = room.players.find((p) => p.role === "host");
     if (hostPlayer && hostPlayer.socketId) {
       io.to(hostPlayer.socketId).emit(
@@ -265,8 +265,6 @@ io.on("connection", (socket) => {
         room.players.filter((p) => p.role !== "host")
       );
     }
-
-    room.started = true;
     io.to(roomCode).emit("game_started");
     updatePlayers(roomCode);
   });
@@ -287,6 +285,12 @@ io.on("connection", (socket) => {
         }
       });
       updatePlayers(roomCode);
+
+      // Emit cho host: game đã reset
+      const hostPlayer = room.players.find((p) => p.role === "host");
+      if (hostPlayer && hostPlayer.socketId) {
+        io.to(hostPlayer.socketId).emit("all_roles", []);
+      }
     }, 5000);
   });
 
@@ -308,7 +312,10 @@ io.on("connection", (socket) => {
         player.socketId = null;
         player.status = "offline";
         updatePlayers(roomCode);
-        console.log(`⚠️ ${player.name} bị disconnect khỏi ${roomCode}`);
+        const host = room.players.find((p) => p.role === "host");
+        if (host && host.socketId) {
+          io.to(host.socketId).emit("player_offline", player.id);
+        }
       }
     }
   });
