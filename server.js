@@ -257,6 +257,15 @@ io.on("connection", (socket) => {
       }
     });
 
+    // Emit danh sách roles đầy đủ cho host
+    const hostPlayer = room.players.find((p) => p.role === "host");
+    if (hostPlayer && hostPlayer.socketId) {
+      io.to(hostPlayer.socketId).emit(
+        "all_roles",
+        room.players.filter((p) => p.role !== "host")
+      );
+    }
+
     room.started = true;
     io.to(roomCode).emit("game_started");
     updatePlayers(roomCode);
