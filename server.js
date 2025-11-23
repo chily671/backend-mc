@@ -8,25 +8,48 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 const rooms = {}; // { roomCode: { host, players, settings, started } }
 
+let lastRoomList = null;
+
 function broadcastRoomList() {
   const list = Object.entries(rooms).map(([code, data]) => ({
     code,
-    host: data.players.find(p => p.id === data.host)?.name || "Ẩn danh",
+    host: data.players.find((p) => p.id === data.host)?.name || "Ẩn danh",
     playerCount: data.players.length,
-    started: data.started
+    started: data.started,
   }));
 
-  io.emit("room_list_update", list);
-}
+  const json = JSON.stringify(list);
 
+  if (json !== lastRoomList) {
+    // chỉ emit khi thay đổi
+    lastRoomList = json;
+    io.emit("room_list_update", list);
+  }
+}
 
 function getRoom(roomCode) {
   return rooms[roomCode];
 }
 
+const playerCache = {}; // { roomCode: "json-string" }
+
 function updatePlayers(roomCode) {
-  const room = getRoom(roomCode);
-  if (room) io.to(roomCode).emit("players_update", room.players);
+  const room = rooms[roomCode];
+  if (!room) return;
+
+  const payload = room.players.map((p) => ({
+    id: p.id,
+    name: p.name,
+    status: p.status,
+    role: p.role,
+  }));
+
+  const json = JSON.stringify(payload);
+
+  if (playerCache[roomCode] !== json) {
+    playerCache[roomCode] = json;
+    io.to(roomCode).emit("players_update", room.players);
+  }
 }
 
 io.on("connection", (socket) => {
@@ -57,30 +80,53 @@ io.on("connection", (socket) => {
   });
 
   socket.on("join_room", ({ roomCode, playerName, userId }) => {
-    const room = getRoom(roomCode);
-    if (!room)
-      return io.to(socket.id).emit("error_message", "Phòng không tồn tại!");
+    const room = rooms[roomCode];
+    if (!room) {
+      io.to(socket.id).emit("error_message", "Phòng không tồn tại");
+      return;
+    }
 
-    const existing = room.players.find((p) => p.id === userId);
-    if (existing) existing.socketId = socket.id;
-    else
-      rooms[roomCode].players.push({
+    let player = room.players.find((p) => p.id === userId);
+
+    if (player) {
+      // reconnect
+      player.socketId = socket.id;
+      player.status = "online";
+      player._rejoined = true;
+    } else {
+      // new player
+      player = {
         id: userId,
         socketId: socket.id,
         name: playerName,
         role: "player",
-      });
+        status: "online",
+        keyword: null,
+        _rejoined: false,
+      };
+      room.players.push(player);
+    }
+
+    // rời tất cả phòng cũ trước khi join lại
+    for (const roomJoined of socket.rooms) {
+      if (roomJoined !== socket.id) socket.leave(roomJoined);
+    }
 
     socket.join(roomCode);
+
+    // tránh duplicate emit
+    if (!player._rejoined) {
+      io.to(socket.id).emit("joined_success", {
+        roomCode,
+        host: room.players.find((p) => p.id === room.host)?.name || null,
+      });
+    }
+
     updatePlayers(roomCode);
-
-    // ✅ Thêm dòng này:
-    io.to(socket.id).emit("joined_success", { roomCode });
-    io.to(roomCode).emit("players_update", rooms[roomCode].players);
-
-    console.log(`👤 ${playerName} joined room ${roomCode}`);
+    broadcastRoomList();
   });
-  // 🚪 Người chơi rời phòng
+
+  // leave_room
   socket.on("leave_room", ({ roomCode, userId }) => {
     const room = rooms[roomCode];
     if (!room) return;
@@ -90,9 +136,10 @@ io.on("connection", (socket) => {
       const player = room.players[idx];
       console.log(`🚪 ${player.name} left room ${roomCode}`);
 
-      // Nếu host rời -> đánh dấu offline thay vì xoá ngay
       if (userId === room.host) {
-        player.socketId = null; // cho phép reconnect
+        // Host rời: đánh dấu offline nhưng keep record
+        player.socketId = null;
+        player.status = "offline";
         io.to(roomCode).emit("players_update", room.players);
         console.log(`⚠️ Host ${player.name} offline, phòng vẫn tồn tại`);
       } else {
@@ -100,7 +147,6 @@ io.on("connection", (socket) => {
         socket.leave(roomCode);
         updatePlayers(roomCode);
       }
-
       broadcastRoomList();
     }
   });
@@ -128,29 +174,56 @@ io.on("connection", (socket) => {
     if (!room || room.started || room.host !== userId) return;
 
     const { villagers, spies, whiteHats, keywords } = room.settings;
-    const players = room.players.filter((p) => p.role !== "host");
+    // Lấy danh sách players khả dụng (loại host)
+    const availablePlayers = room.players.filter(
+      (p) => p.role !== "host" && p.socketId // nếu muốn loại offline, dùng && p.socketId
+    );
 
-    const shuffled = [...players].sort(() => Math.random() - 0.5);
+    // Shuffle
+    const shuffled = [...availablePlayers].sort(() => Math.random() - 0.5);
+
+    // Tổng số cần gán vai
+    const totalNeeded = villagers + spies + whiteHats;
+    // Nếu không đủ người, có thể thông báo hoặc giảm số lượng tự động. Ở đây mình gán giới hạn
+    const assignedSlice = shuffled.slice(
+      0,
+      Math.min(shuffled.length, totalNeeded)
+    );
+
     const assigned = [
-      ...shuffled
+      ...assignedSlice
         .slice(0, villagers)
         .map((p) => ({ ...p, role: "villager", keyword: keywords.villager })),
-      ...shuffled
+      ...assignedSlice
         .slice(villagers, villagers + spies)
         .map((p) => ({ ...p, role: "spy", keyword: keywords.spy })),
-      ...shuffled
+      ...assignedSlice
         .slice(villagers + spies, villagers + spies + whiteHats)
         .map((p) => ({ ...p, role: "whiteHat", keyword: keywords.whiteHat })),
     ];
 
-    room.players = [room.players.find((p) => p.role === "host"), ...assigned];
-    assigned.forEach((p) =>
-      io
-        .to(p.socketId)
-        .emit("role_assigned", { role: p.role, keyword: p.keyword })
-    );
+    // Cập nhật room.players: giữ nguyên tất cả player, chỉ cập nhật role/keyword cho những người được assigned
+    const hostPlayer = room.players.find((p) => p.role === "host");
+    room.players = room.players.map((p) => {
+      const a = assigned.find((x) => x.id === p.id);
+      if (a) return { ...p, role: a.role, keyword: a.keyword };
+      // người không được assigned giữ role cũ (thường "player")
+      return { ...p, keyword: null };
+    });
+
+    // Emit role riêng cho từng người, chỉ khi họ đang connected
+    assigned.forEach((p) => {
+      if (p.socketId) {
+        io.to(p.socketId).emit("role_assigned", {
+          role: p.role,
+          keyword: p.keyword,
+        });
+      }
+    });
+
     room.started = true;
     io.to(roomCode).emit("game_started");
+    updatePlayers(roomCode);
   });
 
   socket.on("end_game", ({ roomCode }) => {
@@ -182,12 +255,13 @@ io.on("connection", (socket) => {
     io.to(roomCode).emit("game_playing", reveal);
   });
 
+  // disconnect
   socket.on("disconnect", () => {
     for (const [roomCode, room] of Object.entries(rooms)) {
       const player = room.players.find((p) => p.socketId === socket.id);
       if (player) {
-        // Chỉ set socketId = null, không xoá phòng ngay
         player.socketId = null;
+        player.status = "offline";
         updatePlayers(roomCode);
         console.log(`⚠️ ${player.name} bị disconnect khỏi ${roomCode}`);
       }
@@ -200,6 +274,7 @@ io.on("connection", (socket) => {
     const player = room.players.find((p) => p.id === userId);
     if (player) {
       player.socketId = socket.id;
+      player.status = "online";
       socket.join(roomCode);
       updatePlayers(roomCode);
       io.to(socket.id).emit("reconnected_success");
