@@ -61,7 +61,14 @@ io.on("connection", (socket) => {
     rooms[roomCode] = {
       host: userId,
       players: [
-        { id: userId, socketId: socket.id, name: hostName, role: "host" },
+        {
+          id: userId,
+          socketId: socket.id,
+          name: hostName,
+          role: "host",
+          status: "online",
+          keyword: null,
+        },
       ],
       settings: {
         villagers: 3,
@@ -76,6 +83,9 @@ io.on("connection", (socket) => {
     io.to(socket.id).emit("room_created", roomCode);
     console.log(`🆕 Room ${roomCode} created by ${hostName}`);
 
+    // Gửi danh sách players ngay cho host
+    updatePlayers(roomCode);
+    // Gửi danh sách phòng (nếu thay đổi)
     broadcastRoomList();
   });
 
@@ -131,24 +141,35 @@ io.on("connection", (socket) => {
     const room = rooms[roomCode];
     if (!room) return;
 
-    const idx = room.players.findIndex((p) => p.id === userId);
-    if (idx !== -1) {
-      const player = room.players[idx];
-      console.log(`🚪 ${player.name} left room ${roomCode}`);
+    const player = room.players.find((p) => p.id === userId);
+    if (!player) return;
 
-      if (userId === room.host) {
-        // Host rời: đánh dấu offline nhưng keep record
-        player.socketId = null;
-        player.status = "offline";
-        io.to(roomCode).emit("players_update", room.players);
-        console.log(`⚠️ Host ${player.name} offline, phòng vẫn tồn tại`);
-      } else {
-        room.players.splice(idx, 1);
-        socket.leave(roomCode);
-        updatePlayers(roomCode);
-      }
+    console.log(`🚪 ${player.name} rời phòng ${roomCode}`);
+
+    // 💥 Nếu HOST thoát → xóa phòng ngay lập tức
+    if (userId === room.host) {
+      // Báo cho tất cả người trong phòng
+      io.to(roomCode).emit("room_deleted", {
+        message: "Host đã thoát phòng. Phòng đã bị giải tán.",
+      });
+
+      // Tống tất cả socket ra khỏi room
+      io.in(roomCode).socketsLeave(roomCode);
+
+      // Xóa phòng
+      delete rooms[roomCode];
       broadcastRoomList();
+
+      console.log(`🗑️ Host thoát → phòng ${roomCode} đã được xóa`);
+      return;
     }
+
+    // 🧍 Người chơi bình thường thoát
+    room.players = room.players.filter((p) => p.id !== userId);
+    socket.leave(roomCode);
+
+    updatePlayers(roomCode);
+    broadcastRoomList();
   });
 
   socket.on("update_settings", ({ roomCode, userId, newSettings }) => {
