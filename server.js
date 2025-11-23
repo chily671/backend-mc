@@ -244,9 +244,9 @@ io.on("connection", (socket) => {
     room.players = room.players.map((p) => {
       const a = assigned.find((x) => x.id === p.id);
       if (a) return { ...p, role: a.role, keyword: a.keyword };
+      if (p.id === room.host) return p; // giữ nguyên host
       return { ...p, keyword: null };
     });
-
     // Emit role riêng cho từng người đang online
     assigned.forEach((p) => {
       if (p.socketId) {
@@ -258,11 +258,11 @@ io.on("connection", (socket) => {
     });
 
     room.started = true;
-    const hostPlayer = room.players.find((p) => p.role === "host");
+    const hostPlayer = room.players.find((p) => p.id === room.host);
     if (hostPlayer && hostPlayer.socketId) {
       io.to(hostPlayer.socketId).emit(
         "all_roles",
-        room.players.filter((p) => p.role !== "host")
+        room.players.filter((p) => p.id !== room.host) // loại trừ host
       );
     }
     io.to(roomCode).emit("game_started");
